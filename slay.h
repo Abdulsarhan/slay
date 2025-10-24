@@ -5,6 +5,9 @@
 #include <sys/stat.h> // For time_t and stat.
 typedef uint8_t slay_bool;
 
+#define slay_true 1
+#define slay_false 0
+
 typedef struct {
 	void* handle;
 } slay_file;
@@ -115,6 +118,9 @@ SLAYAPI uint64_t slay_get_timer_frequency(void);
 SLAYAPI void *slay_load_dynamic_library(const char *dll);
 SLAYAPI void *slay_load_dynamic_function(void *dll, char *func_name);
 SLAYAPI slay_bool slay_free_dynamic_library(void *dll);
+
+// execute other programs
+SLAYAPI slay_bool slay_execute(const char *command, slay_bool wait_for_command_to_finish);
 
 #ifdef __cplusplus
 }

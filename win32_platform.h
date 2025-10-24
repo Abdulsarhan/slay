@@ -1,25 +1,56 @@
 #ifndef WIN32_PLATFORM_H
 #define WIN32_PLATFORM_H
+#pragma warning(disable : 4996)
 #include <Windows.h>
+#include <Shlwapi.h>
 #include <aclapi.h>
+// Helper function to convert UTF-8 to UTF-16
+static wchar_t* win32_utf8_to_utf16(const char* utf8_str) {
+    if (!utf8_str) return NULL;
+    
+    int len = MultiByteToWideChar(CP_UTF8, 0, utf8_str, -1, NULL, 0);
+    if (len == 0) return NULL;
+    
+    wchar_t* utf16_str = (wchar_t*)malloc(len * sizeof(wchar_t));
+    if (!utf16_str) return NULL;
+    
+    if (MultiByteToWideChar(CP_UTF8, 0, utf8_str, -1, utf16_str, len) == 0) {
+        free(utf16_str);
+        return NULL;
+    }
+    
+    return utf16_str;
+}
 
 SLAYAPI slay_bool slay_does_file_exist(const char* file_path) {
-    DWORD attrs = GetFileAttributesA(file_path);
+    wchar_t* wide_path = win32_utf8_to_utf16(file_path);
+    if (!wide_path) return 0;
+    
+    DWORD attrs = GetFileAttributesW(wide_path);
+    free(wide_path);
     return (attrs != INVALID_FILE_ATTRIBUTES) && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
 }
 
 SLAYAPI size_t slay_get_file_size(const char* file_path) {
-    HANDLE file = CreateFileA(
-        file_path,
+    wchar_t* wide_path = win32_utf8_to_utf16(file_path);
+    if (!wide_path) return 0;
+    
+    HANDLE file = CreateFileW(
+        wide_path,
         GENERIC_READ,
         FILE_SHARE_READ,
         NULL,
         OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL,
         NULL);
+    
+    free(wide_path);
+
+    if (file == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
 
     LARGE_INTEGER file_size;
-
     if (GetFileSizeEx(file, &file_size)) {
         CloseHandle(file);
         return file_size.QuadPart;
@@ -29,19 +60,29 @@ SLAYAPI size_t slay_get_file_size(const char* file_path) {
 }
 
 SLAYAPI size_t slay_get_last_write_time(const char* file) {
+    wchar_t* wide_path = win32_utf8_to_utf16(file);
+    if (!wide_path) return 0;
+    
     WIN32_FILE_ATTRIBUTE_DATA fileInfo;
-    if (!GetFileAttributesExA(file, GetFileExInfoStandard, &fileInfo)) {
-        return 0; // Error case
+    if (!GetFileAttributesExW(wide_path, GetFileExInfoStandard, &fileInfo)) {
+        free(wide_path);
+        return 0;
     }
+    free(wide_path);
     return ((uint64_t)fileInfo.ftLastWriteTime.dwHighDateTime << 32) |
            fileInfo.ftLastWriteTime.dwLowDateTime;
 }
 
 SLAYAPI size_t slay_get_last_read_time(const char* file) {
+    wchar_t* wide_path = win32_utf8_to_utf16(file);
+    if (!wide_path) return 0;
+    
     WIN32_FILE_ATTRIBUTE_DATA fileInfo;
-    if (!GetFileAttributesExA(file, GetFileExInfoStandard, &fileInfo)) {
-        return 0; // Error case
+    if (!GetFileAttributesExW(wide_path, GetFileExInfoStandard, &fileInfo)) {
+        free(wide_path);
+        return 0;
     }
+    free(wide_path);
     return ((uint64_t)fileInfo.ftLastAccessTime.dwHighDateTime << 32) |
            fileInfo.ftLastAccessTime.dwLowDateTime;
 }
@@ -51,13 +92,15 @@ SLAYAPI uint32_t slay_get_file_permissions(const char* file_path) {
         return 0;
     }
 
+    wchar_t* wide_path = win32_utf8_to_utf16(file_path);
+    if (!wide_path) return 0;
+
     uint32_t permissions = 0;
 
-    // Get the file's security descriptor
     PACL pDacl = NULL;
     PSECURITY_DESCRIPTOR pSD = NULL;
-    DWORD dwRes = GetNamedSecurityInfoA(
-        file_path,
+    DWORD dwRes = GetNamedSecurityInfoW(
+        wide_path,
         SE_FILE_OBJECT,
         DACL_SECURITY_INFORMATION,
         NULL,
@@ -66,20 +109,20 @@ SLAYAPI uint32_t slay_get_file_permissions(const char* file_path) {
         NULL,
         &pSD);
 
+    free(wide_path);
+
     if (dwRes != ERROR_SUCCESS) {
         if (pSD)
             LocalFree(pSD);
         return 0;
     }
 
-    // Get current process token
     HANDLE hToken;
     if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
         LocalFree(pSD);
         return 0;
     }
 
-    // Check effective permissions
     GENERIC_MAPPING mapping = {0};
     mapping.GenericRead = FILE_GENERIC_READ;
     mapping.GenericWrite = FILE_GENERIC_WRITE;
@@ -102,7 +145,6 @@ SLAYAPI uint32_t slay_get_file_permissions(const char* file_path) {
             permissions |= SLAY_EXECUTE;
     }
 
-    // Cleanup
     CloseHandle(hToken);
     LocalFree(pSD);
 
@@ -111,10 +153,12 @@ SLAYAPI uint32_t slay_get_file_permissions(const char* file_path) {
 
 SLAYAPI slay_bool slay_change_file_permissions(const char* file_path, uint32_t permission_flags) {
     if (!file_path) {
-        return 0; // Invalid path
+        return 0;
     }
 
-    // Convert permission_flags to Windows-specific access rights
+    wchar_t* wide_path = win32_utf8_to_utf16(file_path);
+    if (!wide_path) return 0;
+
     DWORD dwAccessRights = 0;
     if (permission_flags & SLAY_READ)
         dwAccessRights |= GENERIC_READ;
@@ -124,12 +168,13 @@ SLAYAPI slay_bool slay_change_file_permissions(const char* file_path, uint32_t p
         dwAccessRights |= GENERIC_EXECUTE;
 
     if (dwAccessRights == 0) {
-        return 0; // No valid permissions requested
+        free(wide_path);
+        return 0;
     }
 
-    // Get the current user's SID
     HANDLE hToken;
     if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
+        free(wide_path);
         return 0;
     }
 
@@ -137,38 +182,39 @@ SLAYAPI slay_bool slay_change_file_permissions(const char* file_path, uint32_t p
     GetTokenInformation(hToken, TokenUser, NULL, 0, &dwSize);
     if (dwSize == 0) {
         CloseHandle(hToken);
+        free(wide_path);
         return 0;
     }
 
     PTOKEN_USER pTokenUser = (PTOKEN_USER)malloc(dwSize);
     if (!pTokenUser) {
         CloseHandle(hToken);
+        free(wide_path);
         return 0;
     }
 
     if (!GetTokenInformation(hToken, TokenUser, pTokenUser, dwSize, &dwSize)) {
         free(pTokenUser);
         CloseHandle(hToken);
+        free(wide_path);
         return 0;
     }
 
     CloseHandle(hToken);
 
-    // Initialize an EXPLICIT_ACCESS structure for the new permissions
-    EXPLICIT_ACCESSA ea = {0};
+    EXPLICIT_ACCESS_W ea = {0};
     ea.grfAccessPermissions = dwAccessRights;
     ea.grfAccessMode = SET_ACCESS;
     ea.grfInheritance = NO_INHERITANCE;
     ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
     ea.Trustee.TrusteeType = TRUSTEE_IS_USER;
-    ea.Trustee.ptstrName = (LPSTR)pTokenUser->User.Sid;
+    ea.Trustee.ptstrName = (LPWSTR)pTokenUser->User.Sid;
 
-    // Get the existing DACL and modify it
     PACL pOldDACL = NULL, pNewDACL = NULL;
     PSECURITY_DESCRIPTOR pSD = NULL;
 
-    DWORD dwRes = GetNamedSecurityInfoA(
-        (LPSTR)file_path,
+    DWORD dwRes = GetNamedSecurityInfoW(
+        wide_path,
         SE_FILE_OBJECT,
         DACL_SECURITY_INFORMATION,
         NULL,
@@ -179,20 +225,20 @@ SLAYAPI slay_bool slay_change_file_permissions(const char* file_path, uint32_t p
 
     if (dwRes != ERROR_SUCCESS) {
         free(pTokenUser);
+        free(wide_path);
         return 0;
     }
 
-    // Create a new DACL with the updated permissions
-    dwRes = SetEntriesInAclA(1, &ea, pOldDACL, &pNewDACL);
+    dwRes = SetEntriesInAclW(1, &ea, pOldDACL, &pNewDACL);
     if (dwRes != ERROR_SUCCESS) {
         LocalFree(pSD);
         free(pTokenUser);
+        free(wide_path);
         return 0;
     }
 
-    // Apply the new DACL to the file
-    dwRes = SetNamedSecurityInfoA(
-        (LPSTR)file_path,
+    dwRes = SetNamedSecurityInfoW(
+        wide_path,
         SE_FILE_OBJECT,
         DACL_SECURITY_INFORMATION,
         NULL,
@@ -200,17 +246,20 @@ SLAYAPI slay_bool slay_change_file_permissions(const char* file_path, uint32_t p
         pNewDACL,
         NULL);
 
-    // Cleanup
     LocalFree(pNewDACL);
     LocalFree(pSD);
     free(pTokenUser);
+    free(wide_path);
 
     return (dwRes == ERROR_SUCCESS) ? 1 : 0;
 }
 
 SLAYAPI unsigned char *slay_read_entire_file(const char *file_path, size_t *bytes_read) {
-    HANDLE file = CreateFileA(
-        file_path,
+    wchar_t* wide_path = win32_utf8_to_utf16(file_path);
+    if (!wide_path) return NULL;
+    
+    HANDLE file = CreateFileW(
+        wide_path,
         GENERIC_READ,
         FILE_SHARE_READ,
         NULL,
@@ -218,6 +267,8 @@ SLAYAPI unsigned char *slay_read_entire_file(const char *file_path, size_t *byte
         FILE_ATTRIBUTE_NORMAL,
         NULL
     );
+
+    free(wide_path);
 
     if (file == INVALID_HANDLE_VALUE) {
         return NULL;
@@ -230,7 +281,6 @@ SLAYAPI unsigned char *slay_read_entire_file(const char *file_path, size_t *byte
     }
 
     if (file_size.QuadPart > SIZE_MAX) {
-        // File too large to fit in memory
         CloseHandle(file);
         return NULL;
     }
@@ -253,7 +303,7 @@ SLAYAPI unsigned char *slay_read_entire_file(const char *file_path, size_t *byte
             return NULL;
         }
 
-        if (read_now == 0) break; // EOF or unexpected end
+        if (read_now == 0) break;
 
         total_read += read_now;
     }
@@ -263,18 +313,23 @@ SLAYAPI unsigned char *slay_read_entire_file(const char *file_path, size_t *byte
     if (bytes_read)
         *bytes_read = total_read;
 
-    return buffer;
+    return (unsigned char*)buffer;
 }
 
 SLAYAPI slay_bool slay_write_file(const char* file_path, size_t file_size, char* buffer) {
-    HANDLE file = CreateFileA(
-        file_path,
+    wchar_t* wide_path = win32_utf8_to_utf16(file_path);
+    if (!wide_path) return 1;
+    
+    HANDLE file = CreateFileW(
+        wide_path,
         GENERIC_WRITE,
         0,
         NULL,
         CREATE_ALWAYS,
         FILE_ATTRIBUTE_NORMAL,
         NULL);
+
+    free(wide_path);
 
     if (file == INVALID_HANDLE_VALUE) {
         return 1;
@@ -302,24 +357,47 @@ SLAYAPI slay_bool slay_write_file(const char* file_path, size_t file_size, char*
 }
 
 SLAYAPI slay_bool slay_copy_file(const char* original_path, const char* copy_path) {
-    return CopyFileA(original_path, copy_path, FALSE) ? 0 : 1;
+    wchar_t* wide_original = win32_utf8_to_utf16(original_path);
+    wchar_t* wide_copy = win32_utf8_to_utf16(copy_path);
+    
+    if (!wide_original || !wide_copy) {
+        if (wide_original) free(wide_original);
+        if (wide_copy) free(wide_copy);
+        return 1;
+    }
+    
+    BOOL result = CopyFileW(wide_original, wide_copy, FALSE);
+    
+    free(wide_original);
+    free(wide_copy);
+    
+    return result ? 0 : 1;
 }
 
 SLAYAPI slay_file* slay_open_file(const char* file_path) {
+    wchar_t* wide_path = win32_utf8_to_utf16(file_path);
+    if (!wide_path) return NULL;
+    
     slay_file* file = (slay_file*)malloc(sizeof(slay_file));
-    file->handle = CreateFileA(
-        file_path,             // File name
-        GENERIC_READ,          // Desired access
-        FILE_SHARE_READ,       // Share mode
-        NULL,                  // Security attributes
-        OPEN_EXISTING,         // Creation disposition
-        FILE_ATTRIBUTE_NORMAL, // Flags and attributes
-        NULL                   // Template file
+    if (!file) {
+        free(wide_path);
+        return NULL;
+    }
+    
+    file->handle = CreateFileW(
+        wide_path,
+        GENERIC_READ,
+        FILE_SHARE_READ,
+        NULL,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL
     );
 
+    free(wide_path);
+
     if (file->handle == INVALID_HANDLE_VALUE) {
-        DWORD error = GetLastError();
-        // Optional: Log or handle error here
+        free(file);
         return NULL;
     }
 
@@ -358,14 +436,29 @@ SLAYAPI slay_bool slay_read_from_open_file(slay_file* file, size_t offset, size_
 }
 
 SLAYAPI slay_bool slay_close_file(slay_file* file) {
+    if (!file) return 0;
+    
     if (!CloseHandle(file->handle)) {
         return 0;
     }
     free(file);
     return 1;
 }
-
 //----------------------------------------------------------------------------------
+// Directory Listing.
+//----------------------------------------------------------------------------------
+
+SLAYAPI slay_bool slay_path_is_dir(const char* path) {
+    wchar_t* wide_path = win32_utf8_to_utf16(path);
+    if (!wide_path) return NULL;
+
+    slay_bool is_dir = PathIsDirectoryW(wide_path) ? slay_true : slay_false;
+
+    free(wide_path);
+
+    return is_dir;
+}
+    //----------------------------------------------------------------------------------
 // Random Number Generator.
 //----------------------------------------------------------------------------------
 
@@ -969,5 +1062,47 @@ SLAYAPI void* slay_load_dynamic_function(void* dll, char* func_name) {
 SLAYAPI slay_bool slay_free_dynamic_library(void* dll) {
     slay_bool free_result = FreeLibrary(dll);
     return (slay_bool)free_result;
+}
+
+//----------------------------------------------------------------------------------
+// Execute other programs.
+//----------------------------------------------------------------------------------
+SLAYAPI slay_bool slay_execute(const char *command, slay_bool wait_for_command_to_finish) {
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    ZeroMemory(&pi, sizeof(pi));
+
+    // CreateProcessA modifies the command line buffer, so copy it
+    char cmdline[MAX_PATH * 4];
+    strncpy(cmdline, command, sizeof(cmdline) - 1);
+    cmdline[sizeof(cmdline) - 1] = '\0';
+
+    if (!CreateProcessA(
+            NULL,           // application name
+            cmdline,        // command line
+            NULL,           // process attributes
+            NULL,           // thread attributes
+            FALSE,          // inherit handles
+            0,              // creation flags
+            NULL,           // environment
+            NULL,           // current directory
+            &si,
+            &pi)) {
+        return slay_false;
+    }
+
+    // Optionally wait for process to finish
+    if (wait_for_command_to_finish) {
+		WaitForSingleObject(pi.hProcess, INFINITE);
+    }
+
+    // Clean up handles
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+
+    return slay_true;
 }
 #endif // WIN32_PLATFORM_H
