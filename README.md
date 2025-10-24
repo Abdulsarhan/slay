@@ -21,7 +21,6 @@ None
 __Windows:__
 * multi-threading
 * directory listing
-* executing other programs
 
 ## License
 MIT
