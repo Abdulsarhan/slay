@@ -4,6 +4,11 @@
 #include <Windows.h>
 #include <Shlwapi.h>
 #include <aclapi.h>
+
+struct slay_mutex {
+    CRITICAL_SECTION cs;
+};
+
 // Helper function to convert UTF-8 to UTF-16
 static wchar_t* win32_utf8_to_utf16(const char* utf8_str) {
     if (!utf8_str) return NULL;
@@ -307,7 +312,7 @@ SLAYAPI unsigned char *slay_read_entire_file(const char *file_path, size_t *byte
 
         total_read += read_now;
     }
-    buffer[total_read] = '\0';
+    buffer[total_size] = '\0';
     CloseHandle(file);
 
     if (bytes_read)
@@ -378,13 +383,14 @@ SLAYAPI slay_file* slay_open_file(const char* file_path) {
     wchar_t* wide_path = win32_utf8_to_utf16(file_path);
     if (!wide_path) return NULL;
     
-    slay_file* file = (slay_file*)malloc(sizeof(slay_file));
+    slay_file* file = NULL;
+
     if (!file) {
         free(wide_path);
         return NULL;
     }
     
-    file->handle = CreateFileW(
+    file = CreateFileW(
         wide_path,
         GENERIC_READ,
         FILE_SHARE_READ,
@@ -396,8 +402,7 @@ SLAYAPI slay_file* slay_open_file(const char* file_path) {
 
     free(wide_path);
 
-    if (file->handle == INVALID_HANDLE_VALUE) {
-        free(file);
+    if (file == INVALID_HANDLE_VALUE) {
         return NULL;
     }
 
@@ -405,14 +410,14 @@ SLAYAPI slay_file* slay_open_file(const char* file_path) {
 }
 
 SLAYAPI slay_bool slay_read_from_open_file(slay_file* file, size_t offset, size_t bytes_to_read, char* buffer) {
-    if (!file || file->handle == INVALID_HANDLE_VALUE || !buffer) {
+    if (!file || file == INVALID_HANDLE_VALUE || !buffer) {
         return 0;
     }
 
     LARGE_INTEGER file_offset = {0};
     file_offset.QuadPart = (LONGLONG)offset;
 
-    if (!SetFilePointerEx(file->handle, file_offset, NULL, FILE_BEGIN)) {
+    if (!SetFilePointerEx(file, file_offset, NULL, FILE_BEGIN)) {
         return 0;
     }
 
@@ -425,7 +430,7 @@ SLAYAPI slay_bool slay_read_from_open_file(slay_file* file, size_t offset, size_
             to_read = (DWORD)(bytes_to_read - total_read);
         }
         DWORD bytesRead = 0;
-        BOOL success = ReadFile(file->handle, buffer + total_read, to_read, &bytesRead, NULL);
+        BOOL success = ReadFile(file, buffer + total_read, to_read, &bytesRead, NULL);
         if (!success || bytesRead != to_read) {
             return 0;
         }
@@ -438,19 +443,19 @@ SLAYAPI slay_bool slay_read_from_open_file(slay_file* file, size_t offset, size_
 SLAYAPI slay_bool slay_close_file(slay_file* file) {
     if (!file) return 0;
     
-    if (!CloseHandle(file->handle)) {
+    if (!CloseHandle(file)) {
         return 0;
     }
     free(file);
     return 1;
 }
+
 //----------------------------------------------------------------------------------
 // Directory Listing.
 //----------------------------------------------------------------------------------
-
 SLAYAPI slay_bool slay_path_is_dir(const char* path) {
     wchar_t* wide_path = win32_utf8_to_utf16(path);
-    if (!wide_path) return NULL;
+    if (!wide_path) return 1;
 
     slay_bool is_dir = PathIsDirectoryW(wide_path) ? slay_true : slay_false;
 
@@ -458,10 +463,10 @@ SLAYAPI slay_bool slay_path_is_dir(const char* path) {
 
     return is_dir;
 }
-    //----------------------------------------------------------------------------------
+
+//----------------------------------------------------------------------------------
 // Random Number Generator.
 //----------------------------------------------------------------------------------
-
 SLAYAPI void slay_srand(uint64_t* state, uint64_t seed) {
     if (seed == 0) {
         seed = 1; // Avoid zero state which would produce all zeros
@@ -480,6 +485,7 @@ SLAYAPI uint32_t slay_rand(uint64_t* state) {
     // and longer period than lower bits in an LCG
     return (uint32_t)(*state >> 32);
 }
+
 SLAYAPI char* slay_clipboard_get(void) {
     if (!OpenClipboard(NULL))
         return NULL;
@@ -550,7 +556,6 @@ SLAYAPI void slay_url_launch(char* url) {
 //----------------------------------------------------------------------------------
 // File Requester Functions.
 //----------------------------------------------------------------------------------
-
 #include <commdlg.h>
 
 typedef struct PalRequester {
@@ -1005,6 +1010,10 @@ void win32_init_timer(void) {
     g_app_start_time = counter.QuadPart;
 }
 
+SLAYAPI void slay_init() {
+    win32_init_timer();
+}
+
 SLAYAPI double slay_get_time_since_slay_started(void) {
     LARGE_INTEGER counter;
     QueryPerformanceCounter(&counter);
@@ -1044,6 +1053,111 @@ SLAYAPI uint64_t slay_get_timer_frequency(void) {
     }
 
     return frequency;
+}
+//----------------------------------------------------------------------------------
+// Multi-threadding functions.
+//----------------------------------------------------------------------------------
+SLAYAPI slay_mutex *slay_create_mutex() {
+    slay_mutex *mutex = malloc(sizeof(*mutex));
+    if (!mutex) return NULL;
+    InitializeCriticalSection(&mutex->cs);
+    return mutex;
+}
+
+SLAYAPI void slay_lock_mutex(slay_mutex *mutex) {
+    EnterCriticalSection(&mutex->cs);
+}
+
+SLAYAPI slay_bool slay_lock_mutex_try(slay_mutex *mutex) {
+    return TryEnterCriticalSection(&mutex->cs) ? 1 : 0;
+}
+
+SLAYAPI void slay_unlock_mutex(slay_mutex *mutex) {
+    LeaveCriticalSection(&mutex->cs);
+}
+
+SLAYAPI void slay_destroy_mutex(slay_mutex *mutex) {
+    DeleteCriticalSection(&mutex->cs);
+    free(mutex);
+}
+
+SLAYAPI slay_signal *slay_create_signal(void) {
+    // Manual-reset event, initially non-signaled
+    return (slay_signal *)CreateEventW(NULL, TRUE, FALSE, NULL);
+}
+
+SLAYAPI slay_bool slay_wait_for_signal(slay_signal *signal, slay_mutex *mutex) {
+    if (!signal)
+        return slay_false;
+
+    // Release the mutex so other threads can activate the signal
+    if (mutex)
+        slay_unlock_mutex(mutex);
+
+    // Wait for the signal to be activated
+    DWORD result = WaitForSingleObject((HANDLE)signal, INFINITE);
+
+    // Reacquire the mutex before returning
+    if (mutex)
+        slay_lock_mutex(mutex);
+
+    return (result == WAIT_OBJECT_0);
+}
+
+SLAYAPI slay_bool slay_activate_signal(slay_signal *signal) {
+    if (!signal)
+        return slay_false;
+
+    return SetEvent((HANDLE)signal) ? slay_true : slay_false;
+}
+
+SLAYAPI slay_bool slay_deactivate_signal(slay_signal *signal) {
+    if (!signal)
+        return slay_false;
+
+    return ResetEvent((HANDLE)signal) ? slay_true : slay_false;
+}
+
+SLAYAPI void slay_destroy_signal(slay_signal *signal) {
+    if (signal)
+        CloseHandle((HANDLE)signal);
+}
+
+typedef struct {
+    slay_thread_func func;
+    void *arg;
+} thread_wrapper_arg;
+
+// Wrapper to adapt slay_thread_func to Windows signature
+DWORD WINAPI thread_wrapper(LPVOID param) {
+    thread_wrapper_arg *wrapper = (thread_wrapper_arg *)param;
+    wrapper->func(wrapper->arg);
+    HeapFree(GetProcessHeap(), 0, wrapper);
+    return 0;
+}
+
+SLAYAPI slay_thread *slay_create_thread(slay_thread_func func, void *arg) {
+    thread_wrapper_arg *wrapper = (thread_wrapper_arg *)HeapAlloc(GetProcessHeap(), 0, sizeof(thread_wrapper_arg));
+    if (!wrapper) return NULL;
+    wrapper->func = func;
+    wrapper->arg = arg;
+
+    HANDLE thread = CreateThread(NULL, 0, thread_wrapper, wrapper, CREATE_SUSPENDED, NULL);
+    return (slay_thread *)thread;
+}
+
+SLAYAPI slay_bool slay_start_thread(slay_thread *thread) {
+    if (!thread) return slay_false;
+    return ResumeThread((HANDLE)thread) != (DWORD)-1;
+}
+
+SLAYAPI slay_bool slay_join_thread(slay_thread *thread) {
+    if (!thread) return slay_false;
+    return WaitForSingleObject((HANDLE)thread, INFINITE) == WAIT_OBJECT_0;
+}
+
+SLAYAPI void slay_destroy_thread(slay_thread *thread) {
+    if (thread) CloseHandle((HANDLE)thread);
 }
 
 //----------------------------------------------------------------------------------

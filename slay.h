@@ -3,24 +3,6 @@
 
 #include <stdint.h>   // For Clearly Defined Types.
 #include <sys/stat.h> // For time_t and stat.
-typedef uint8_t slay_bool;
-
-#define slay_true 1
-#define slay_false 0
-
-typedef struct {
-	void* handle;
-} slay_file;
-
-typedef struct {
-    uint32_t year;
-    uint32_t month;
-    uint32_t weeks;
-    uint32_t day;
-    uint32_t hours;
-    uint32_t minutes;
-    uint32_t seconds;
-} slay_time;
 
 #if defined(_WIN32)
 #if defined(__TINYC__)
@@ -53,42 +35,72 @@ typedef struct {
 #define CLITERAL(type) (type)
 #endif
 
+#define slay_true 1
+#define slay_false 0
+
+#define STATIC_ASSERT_CONCAT(a, b) STATIC_ASSERT_CONCAT_INNER(a, b)
+
+#define STATIC_ASSERT_CONCAT_INNER(a, b) a##b
+
+#define STATIC_ASSERT(cond) \
+typedef char STATIC_ASSERT_CONCAT(static_assertion_failed_at_line_, __LINE__)[ (cond) ? 1 : -1 ]
+
+typedef uint8_t slay_bool;
+typedef void slay_file;
+typedef struct slay_mutex slay_mutex;
+typedef void slay_signal;
+typedef void slay_thread;
+typedef void *(*slay_thread_func)(void *arg);
+typedef struct {
+    uint32_t year;
+    uint32_t month;
+    uint32_t weeks;
+    uint32_t day;
+    uint32_t hours;
+    uint32_t minutes;
+    uint32_t seconds;
+} slay_time;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+SLAYAPI void slay_init();
 // File I/O
-SLAYAPI slay_bool slay_does_file_exist(const char* file_path);
-SLAYAPI size_t slay_get_last_write_time(const char* file);
-SLAYAPI size_t slay_get_last_read_time(const char* file);
-SLAYAPI size_t slay_get_file_size(const char* file_path);
-SLAYAPI uint32_t slay_get_file_permissions(const char* file_path);
-SLAYAPI slay_bool slay_change_file_permissions(const char* file_path, uint32_t permission_flags);
-SLAYAPI unsigned char* slay_read_entire_file(const char* file_path, size_t* bytes_read);
-SLAYAPI slay_bool slay_write_file(const char* file_path, size_t file_size, char* buffer);
-SLAYAPI slay_bool slay_copy_file(const char* original_path, const char* copy_path);
+SLAYAPI slay_bool slay_does_file_exist(const char *file_path);
+SLAYAPI size_t slay_get_last_write_time(const char *file);
+SLAYAPI size_t slay_get_last_read_time(const char *file);
+SLAYAPI size_t slay_get_file_size(const char *file_path);
+SLAYAPI uint32_t slay_get_file_permissions(const char *file_path);
+SLAYAPI slay_bool slay_change_file_permissions(const char *file_path, uint32_t permission_flags);
+SLAYAPI unsigned char *slay_read_entire_file(const char *file_path, size_t *bytes_read);
+SLAYAPI slay_bool slay_write_file(const char *file_path, size_t file_size, char *buffer);
+SLAYAPI slay_bool slay_copy_file(const char *original_path, const char *copy_path);
 
 // Open File I/O
-SLAYAPI slay_file* slay_open_file(const char* file_path);
-SLAYAPI slay_bool slay_read_from_open_file(slay_file* file, size_t offset, size_t bytes_to_read, char* buffer);
-SLAYAPI slay_bool slay_close_file(slay_file* file);
+SLAYAPI slay_file *slay_open_file(const char *file_path);
+SLAYAPI slay_bool slay_read_from_open_file(slay_file *file, size_t offset, size_t bytes_to_read, char *buffer);
+SLAYAPI slay_bool slay_close_file(slay_file *file);
+
+// Directory Listing
+SLAYAPI slay_bool slay_path_is_dir(const char *path);
 
 // Random Number Generation
-SLAYAPI void slay_srand(uint64_t* state, uint64_t seed);
-SLAYAPI uint32_t slay_rand(uint64_t* state);
+SLAYAPI void slay_srand(uint64_t *state, uint64_t seed);
+SLAYAPI uint32_t slay_rand(uint64_t *state);
 
 // Clip board
-SLAYAPI void slay_clipboard_set(const char* text);
-SLAYAPI char* slay_clipboard_get(void);
+SLAYAPI void slay_clipboard_set(const char *text);
+SLAYAPI char *slay_clipboard_get(void);
 
 // URL launch
-SLAYAPI void slay_url_launch(char* url);
+SLAYAPI void slay_url_launch(char *url);
 
 // File dialog / requester
-SLAYAPI void slay_create_save_dialog(char** types, uint32_t type_count, void* id);
-SLAYAPI void slay_create_load_dialog(char** types, uint32_t type_count, void* id);
-SLAYAPI char* slay_show_save_dialog(void* id);
-SLAYAPI char* slay_show_load_dialog(void* id);
+SLAYAPI void slay_create_save_dialog(char **types, uint32_t type_count, void *id);
+SLAYAPI void slay_create_load_dialog(char **types, uint32_t type_count, void *id);
+SLAYAPI char *slay_show_save_dialog(void *id);
+SLAYAPI char *slay_show_load_dialog(void *id);
 
 // String parsing functions.
 SLAYAPI slay_bool slay_is_uppercase(char ch);
@@ -113,6 +125,13 @@ SLAYAPI slay_time slay_get_time_since_boot(void);
 SLAYAPI double slay_get_time_since_slay_started(void);
 SLAYAPI uint64_t slay_get_timer(void);
 SLAYAPI uint64_t slay_get_timer_frequency(void);
+
+// Multi-threadding functions
+SLAYAPI slay_mutex *slay_create_mutex();
+SLAYAPI void slay_lock_mutex(slay_mutex *mutex);
+SLAYAPI slay_bool slay_lock_mutex_try(slay_mutex *mutex);
+SLAYAPI void slay_unlock_mutex(slay_mutex *mutex);
+SLAYAPI void slay_destroy_mutex(slay_mutex *mutex);
 
 // .dll/.so/.dylib loading
 SLAYAPI void *slay_load_dynamic_library(const char *dll);
